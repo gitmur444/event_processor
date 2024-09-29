@@ -4,6 +4,10 @@
 #include <memory>
 #include <ranges> 
 #include <algorithm>
+#include <thread>
+
+#include "Event.h"
+#include "IEventProcessor.h"
 
 using namespace std;
 
@@ -30,153 +34,89 @@ private:
     const std::chrono::steady_clock::time_point start_time_ = std::chrono::steady_clock::now();
 };
 
-class IEvent
-{
-public:
-    virtual ~IEvent() = default;
-    virtual void Process() = 0;
-};
+// void ReaderFunction(IEventProcessor* processor) {
+//     while (true) {
+//         // Извлекаем событие и обрабатываем его
+//         IEvent* event = nullptr;
+//         if (!processor->ProcessEvents()) {  // Условие остановки (буфер пуст)
+//             break;
+//         }
+//     }
+// }
 
-class Event : public IEvent
-{
-public:
-    explicit Event(const int value) : value_(value) {}
-    virtual ~Event() override = default;
-
-    Event(const Event &) = delete;
-    Event &operator=(const Event &) = delete;
-
-    Event(Event &&) = delete;
-    Event &operator=(Event &&) = delete;
-
-    virtual void Process() override
-    {
-        // do something with value_
-    }
-
-private:
-    int value_;
-};
-
-
-class IEventProcessor
-{
-public:
-    using Integer = int64_t;
-
-    struct ReservedEvent
-    {
-        ReservedEvent();
-        ReservedEvent(const Integer sequence_number, void *const event);
-
-        ReservedEvent(const ReservedEvent &) = delete;
-        ReservedEvent &operator=(const ReservedEvent &) = delete;
-
-        ReservedEvent(ReservedEvent &&) = delete;
-        ReservedEvent &operator=(ReservedEvent &&) = delete;
-
-        Integer GetSequenceNumber() const { return sequence_number_; }
-        void *GetEvent() const { return event_; }
-
-    private:
-        Integer sequence_number_;
-        void *event_;
-    };
-
-    struct ReservedEvents
-    {
-        ReservedEvents(const Integer sequence_number,
-                       void *const event,
-                       const size_t count,
-                       const size_t event_size);
-
-        ReservedEvents(const ReservedEvents &) = delete;
-        ReservedEvents &operator=(const ReservedEvents &) = delete;
-
-        ReservedEvents(ReservedEvents &&) = delete;
-        ReservedEvents &operator=(ReservedEvents &&) = delete;
-
-        template <class TEvent, class... Args>
-        void Emplace(const size_t index, Args &&...args)
-        {
-            auto event = static_cast<TEvent *>(GetEvent(index));
-            if (event)
-                std::construct_at(event, std::forward<Args>(args)...);
+// Функция, выполняющая роль потока-читателя
+void ReaderFunction(IEventProcessor* processor) {
+    IEvent* event = nullptr;
+    while (true) {
+        if (!processor->PopEvent(event)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10)); // Ожидание, если буфер пуст
+            continue;
         }
-
-        Integer GetSequenceNumber() const { return sequence_number_; }
-        void *GetEvent(const size_t index) const;
-
-        size_t Count() const { return count_; }
-
-    private:
-        Integer sequence_number_;
-        void *events_;
-        size_t count_;
-        size_t event_size_;
-    };
-
-    template <typename T>
-    std::pair<size_t, void *const> ReserveEvent();
-
-    template <class T, class... Args>
-    ReservedEvent Reserve(Args &&...args)
-    {
-        const auto reservation = ReserveEvent<T>();
-        if (!reservation.second)
-            return ReservedEvent();
-
-        std::construct_at(reservation.second, std::forward<Args>(args)...);
-        return ReservedEvent(reservation.first, reservation.second);
+        if (event) {
+            event->Process();
+        }
     }
+}
 
-    std::vector<ReservedEvents> ReserveRange(const size_t size); // TODO: static vector?
-    void Commit(const Integer sequence_number);
-    void Commit(const Integer sequence_number, const size_t count);
-};
+// void WriterFunction(IEventProcessor* processor, int writer_id, int events_per_writer) {
+//     for (int i = 0; i < events_per_writer; ++i) {
+//         auto reserved_event = processor->Reserve<Event>(writer_id * events_per_writer + i);
+//         if (reserved_event.IsValid()) {
+//             processor->Commit(reserved_event.GetSequenceNumber());
+//         }
+//     }
+// }
 
-int main()
-{
-    // queue 1 event
-    IEventProcessor* event_processor = new IEventProcessor();
-    auto reserved_event = event_processor->Reserve<Event>(2);
-    if (!reserved_event.IsValid())
-    {
-        // ERROR: Reserve() failed ...
-    }
-    else
-    {
-        event_processor->Commit(reserved_event.GetSequenceNumber());
-    }
-
-    // queue multiple events
-    auto reserved_events_collection = event_processor->ReserveRange(2); // It can reserve less items than
-    //requested !You should always check how many events have been reserved !
-    if (reserved_events_collection.empty())
-    {
-        // ERROR: ReserveRange() failed
-    }
-    else
-    {
+// Функция, выполняющая роль потока-писателя
+void WriterFunction(IEventProcessor* processor, int writer_id, int events_per_writer) {
+    for (int j = 0; j < events_per_writer; ++j) {
+        auto reserved_events = processor->ReserveRange(2); // Пример использования ReserveRange
+        if (reserved_events.empty()) {
+            std::cerr << "ERROR: ReserveRange() failed" << std::endl;
+            continue;
+        }
         std::ranges::for_each(
-            reserved_events_collection,
-            [&](IEventProcessor::ReservedEvents &reserved_events)
-            {
-                if (!reserved_events.IsValid())
-                {
-                    // ERROR: Reserve() failed
-                }
-                else
-                {
-                    for (size_t i = 0; i < reserved_events.Count(); ++i)
-                        reserved_events.Emplace<Event>(i, static_cast<int>(i + 3));
-
-                    event_processor->Commit(reserved_events.GetSequenceNumber(), reserved_events.Count());
+            reserved_events,
+            [&](IEventProcessor::ReservedEvents &reserved_events) {
+                if (!reserved_events.IsValid()) {
+                    std::cerr << "ERROR: Reserve() failed" << std::endl;
+                } else {
+                    for (size_t k = 0; k < reserved_events.Count(); ++k) {
+                        reserved_events.Emplace<Event>(k, writer_id * events_per_writer + j + k);
+                    }
+                    processor->Commit(reserved_events.GetSequenceNumber(), reserved_events.Count());
                 }
             }
         );
     }
-    delete event_processor;
+}
+
+int main()
+{
+    constexpr size_t buffer_size = 1024;
+    constexpr int num_writers = 16;
+    constexpr int events_per_writer = 10'000; // Пример: 10 тысяч событий на каждый поток
+
+    IEventProcessor event_processor(buffer_size);
+
+    // Запуск потока-читателя
+    std::thread reader(ReaderFunction, &event_processor);
+
+    // Запуск потоков-писателей
+    std::vector<std::thread> writers;
+    for (int i = 0; i < num_writers; ++i) {
+        writers.emplace_back(WriterFunction, &event_processor, i, events_per_writer);
+    }
+
+    // Ожидание завершения работы всех писателей
+    for (auto& writer : writers) {
+        writer.join();
+    }
+
+    // Ожидание завершения работы потока-читателя
+    reader.join();
+
+    return 0;
 }
 
 // LogDuration ld("Total");
@@ -192,3 +132,47 @@ int main()
 //     Vector<uint8_t> reciever(std::move(big_vector));
 // }
 // cout << "size of big_vector is " << big_vector.size() << '\n';
+
+
+
+    // // queue 1 event
+    // IEventProcessor* event_processor = new IEventProcessor();
+    // auto reserved_event = event_processor->Reserve<Event>(2);
+    // if (!reserved_event.IsValid())
+    // {
+    //     // ERROR: Reserve() failed ...
+    // }
+    // else
+    // {
+    //     event_processor->Commit(reserved_event.GetSequenceNumber());
+    // }
+
+    // // queue multiple events
+    // auto reserved_events_collection = event_processor->ReserveRange(2); // It can reserve less items than
+    // //requested !You should always check how many events have been reserved !
+    // if (reserved_events_collection.empty())
+    // {
+    //     // ERROR: ReserveRange() failed
+    // }
+    // else
+    // {
+    //     std::ranges::for_each(
+    //         reserved_events_collection,
+    //         [&](IEventProcessor::ReservedEvents &reserved_events)
+    //         {
+    //             if (!reserved_events.IsValid())
+    //             {
+    //                 // ERROR: Reserve() failed
+    //                 std::cerr << "ERROR: Reserve() failed" << std::endl;
+    //             }
+    //             else
+    //             {
+    //                 for (size_t i = 0; i < reserved_events.Count(); ++i)
+    //                     reserved_events.Emplace<Event>(i, static_cast<int>(i + 3));
+
+    //                 event_processor->Commit(reserved_events.GetSequenceNumber(), reserved_events.Count());
+    //             }
+    //         }
+    //     );
+    // }
+    // delete event_processor;
