@@ -91,32 +91,79 @@ void WriterFunction(IEventProcessor* processor, int writer_id, int events_per_wr
     }
 }
 
+
+// Глобальный флаг завершения всех потоков записи
+std::atomic<bool> all_writers_finished = false;
+
+// Функция, выполняющая многопоточную запись
+void writer(RingBuffer<Event, 10>& buffer, int startValue, int count) {
+    for (int i = 0; i < count; ++i) {
+        size_t index;
+        while (!buffer.Reserve(index)) {
+            std::this_thread::yield(); // Если буфер полон, подождем, чтобы другие потоки могли освободить место
+            // std::cout << "Buffer is full. Cannot add element " << index << std::endl;
+        }
+        buffer.Commit(index, startValue + i);
+        // std::cout << "Element " << startValue + i << " added to buffer at index " << index << std::endl;
+    }
+}
+
+// Функция, выполняющая многопоточное чтение
+void reader(RingBuffer<Event, 10>& buffer) {
+    Event event(0);
+    while (true) {
+        if (buffer.Pop(event)) {
+            event.Process();
+        } else {
+            if (buffer.IsEmpty() && all_writers_finished) {
+                break; // Буфер пуст и все потоки записи завершены, завершаем чтение
+            }
+            std::this_thread::yield(); // Если буфер временно пуст, ждем новых элементов
+        }
+    }
+}
+
 int main()
 {
-    constexpr size_t buffer_size = 1024;
-    constexpr int num_writers = 16;
-    constexpr int events_per_writer = 10'000; // Пример: 10 тысяч событий на каждый поток
+    RingBuffer<Event, 10> ringBuffer; // Создаем буфер для хранения 10 элементов Event
 
-    IEventProcessor event_processor(buffer_size);
+    // Запускаем два потока записи и один поток чтения
+    std::thread writer1(writer, std::ref(ringBuffer), 1, 500);
+    std::thread writer2(writer, std::ref(ringBuffer), 100000, 500);
+    std::thread readerThread(reader, std::ref(ringBuffer));
 
-    // Запуск потока-читателя
-    std::thread reader(ReaderFunction, &event_processor);
-
-    // Запуск потоков-писателей
-    std::vector<std::thread> writers;
-    for (int i = 0; i < num_writers; ++i) {
-        writers.emplace_back(WriterFunction, &event_processor, i, events_per_writer);
-    }
-
-    // Ожидание завершения работы всех писателей
-    for (auto& writer : writers) {
-        writer.join();
-    }
-
-    // Ожидание завершения работы потока-читателя
-    reader.join();
-
+    // Ожидаем завершения всех потоков
+    writer1.join();
+    writer2.join();
+    all_writers_finished = true;
+    
+    readerThread.join();
     return 0;
+//-------------------------------------------
+    // constexpr size_t buffer_size = 1024;
+    // constexpr int num_writers = 16;
+    // constexpr int events_per_writer = 10'000; // Пример: 10 тысяч событий на каждый поток
+
+    // IEventProcessor event_processor;
+
+    // // Запуск потока-читателя
+    // std::thread reader(ReaderFunction, &event_processor);
+
+    // // Запуск потоков-писателей
+    // std::vector<std::thread> writers;
+    // for (int i = 0; i < num_writers; ++i) {
+    //     writers.emplace_back(WriterFunction, &event_processor, i, events_per_writer);
+    // }
+
+    // // Ожидание завершения работы всех писателей
+    // for (auto& writer : writers) {
+    //     writer.join();
+    // }
+
+    // // Ожидание завершения работы потока-читателя
+    // reader.join();
+
+    // return 0;
 }
 
 // LogDuration ld("Total");

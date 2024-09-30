@@ -13,11 +13,11 @@ public:
         ReservedEvent(const Integer sequence_number, void *const event)
             : sequence_number_(sequence_number), event_(event) {}
 
-        ReservedEvent(const ReservedEvent &) = delete;
-        ReservedEvent &operator=(const ReservedEvent &) = delete;
+        // ReservedEvent(const ReservedEvent &) = delete;
+        // ReservedEvent &operator=(const ReservedEvent &) = delete;
 
-        ReservedEvent(ReservedEvent &&) = delete;
-        ReservedEvent &operator=(ReservedEvent &&) = delete;
+        // ReservedEvent(ReservedEvent &&) = delete;
+        // ReservedEvent &operator=(ReservedEvent &&) = delete;
 
         bool IsValid() const { return event_ != nullptr; }
 
@@ -75,13 +75,9 @@ public:
     };
 
     IEventProcessor()
-        : ring_buffer_(), running_(true) {}
+        : ring_buffer_() {}
 
     ~IEventProcessor() {
-        running_ = false;
-        if (reader_thread_.joinable()) {
-            reader_thread_.join();
-        }
     }
 
     // template <typename T>
@@ -147,8 +143,6 @@ public:
 
 private:
     RingBuffer<IEvent*, 1024> ring_buffer_; 
-    std::atomic<bool> running_;
-    std::thread reader_thread_; 
 
     void* GetLocation(size_t index) {
         return reinterpret_cast<void*>(ring_buffer_.GetBufferPointer(index));

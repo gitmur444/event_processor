@@ -8,14 +8,15 @@ public:
 class Event : public IEvent
 {
 public:
+    Event() = default; 
     explicit Event(const int value) : value_(value) {}
     virtual ~Event() override = default;
 
     Event(const Event &) = delete;
     Event &operator=(const Event &) = delete;
 
-    Event(Event &&) = delete;
-    Event &operator=(Event &&) = delete;
+    Event(Event &&) = default;
+    Event &operator=(Event &&) = default;
 
     virtual void Process() override
     {
